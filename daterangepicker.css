@@ -1,3 +1,7 @@
+.daterangepicker-inline {
+  position: relative;
+}
+
 .daterangepicker {
   position: absolute;
   color: inherit;
@@ -17,7 +21,7 @@
   line-height: 1em;
 }
 
-.daterangepicker:before, .daterangepicker:after {
+.daterangepicker-dropdown:before, .daterangepicker-dropdown:after {
   position: absolute;
   display: inline-block;
   border-bottom-color: rgba(0, 0, 0, 0.2);

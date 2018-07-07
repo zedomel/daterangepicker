@@ -50,9 +50,11 @@
         this.timePicker24Hour = false;
         this.timePickerIncrement = 1;
         this.timePickerSeconds = false;
+        this.timePickerOptions = [];
         this.linkedCalendars = true;
         this.autoUpdateInput = true;
         this.alwaysShowCalendars = false;
+        this.inline = false;
         this.ranges = {};
 
         this.opens = 'right';
@@ -84,6 +86,7 @@
 
         //some state information
         this.isShowing = false;
+        this.nextInvalidDate = null;
         this.leftCalendar = {};
         this.rightCalendar = {};
 
@@ -98,7 +101,7 @@
         //html template for the picker UI
         if (typeof options.template !== 'string' && !(options.template instanceof $))
             options.template =
-            '<div class="daterangepicker">' +
+            '<div class="daterangepicker ' + (this.inline ? 'daterangepicker-inline' : 'daterangepicker-dropdown') + '">' +
                 '<div class="ranges"></div>' +
                 '<div class="drp-calendar left">' +
                     '<div class="calendar-table"></div>' +
@@ -277,6 +280,9 @@
         if (typeof options.alwaysShowCalendars === 'boolean')
             this.alwaysShowCalendars = options.alwaysShowCalendars;
 
+            if (typeof options.inline === 'boolean')
+                this.inline = options.inline;
+
         // update day names order to firstDay
         if (this.locale.firstDay != 0) {
             var iterator = this.locale.firstDay;
@@ -308,6 +314,30 @@
                     this.setEndDate(end);
                 }
             }
+        }
+
+        var time;
+        if (typeof options.timePickerOptions === 'object'){
+          for(var i=0; i < options.timePickerOptions.length; i++){
+            var option = options.timePickerOptions[i];
+            if(typeof option === 'string'){
+              var f = option.split(':');
+              if(f.length > 1){ // at least hour and minutes
+                time = moment().hour(f[0]).minute(f[1]);
+              }
+              if(f.length == 3){ //has seconds
+                time.seconds(f[2]);
+              }
+            }
+            else{
+              time = moment(option);
+            }
+            this.timePickerOptions.push(time);
+          }
+          //When using predefined time do not use timePickerIncrement
+          if(this.timePickerOptions.length > 0){
+            this.timePickerIncrement = 0;
+          }
         }
 
         if (typeof options.ranges === 'object') {
@@ -370,7 +400,8 @@
         }
 
         //can't be used together for now
-        if (this.timePicker && this.autoApply)
+        // You can only use it with inline option
+        if (this.timePicker && this.autoApply && !this.inline)
             this.autoApply = false;
 
         if (this.autoApply) {
@@ -443,6 +474,10 @@
 
         this.updateElement();
 
+        // Show the daterangepicker since it's started for inline mode
+        if (this.inline)
+            this.show();
+
     };
 
     DateRangePicker.prototype = {
@@ -474,10 +509,43 @@
                     this.startDate.minute(Math.floor(this.startDate.minute() / this.timePickerIncrement) * this.timePickerIncrement);
             }
 
+            //if there is any invalid date after start date make
+            // all dates after invalid
+            this.nextInvalidDate = this.findNextInvalidDate(startDate);
+
             if (!this.isShowing)
                 this.updateElement();
 
             this.updateMonthsInView();
+        },
+
+        findNextInvalidDate: function(date){
+          if(this.endDate){
+            return null;
+          }
+
+          var leftCalendar = this.leftCalendar;
+          var rightCalendar = this.rightCalendar;
+          var startDate = this.startDate;
+          var isInvalidDate = this.isInvalidDate;
+          var dt = null;
+          this.container.find('.drp-calendar tbody td').each(function(index, el) {
+
+              //skip week numbers, only look at dates
+              if ($(el).hasClass('week')) return;
+
+              var title = $(el).attr('data-title');
+              var row = title.substr(1, 1);
+              var col = title.substr(3, 1);
+              var cal = $(el).parents('.drp-calendar');
+              dt = cal.hasClass('left') ? leftCalendar.calendar[row][col] : rightCalendar.calendar[row][col];
+              // If invalid date stop loop
+              if( dt.isAfter(date) && isInvalidDate(dt)){
+                return false;
+              }
+          });
+
+          return dt;
         },
 
         setEndDate: function(endDate) {
@@ -571,11 +639,18 @@
         updateCalendars: function() {
 
             if (this.timePicker) {
-                var hour, minute, second;
+                var hour, minute, second, time;
                 if (this.endDate) {
-                    hour = parseInt(this.container.find('.left .hourselect').val(), 10);
-                    minute = parseInt(this.container.find('.left .minuteselect').val(), 10);
-                    second = this.timePickerSeconds ? parseInt(this.container.find('.left .secondselect').val(), 10) : 0;
+                    if( this.timePickerOptions.length > 0 ){
+                      time = this.container.find('.left .hourselect').val().split(':');
+                      hour = parseInt(time[0], 10);
+                      minute = parseInt(time[1], 10);
+                      second = this.timePickerSeconds ? parseInt(time[2], 10) : 0;
+                    } else {
+                      hour = parseInt(this.container.find('.left .hourselect').val(), 10);
+                      minute = parseInt(this.container.find('.left .minuteselect').val(), 10);
+                      second = this.timePickerSeconds ? parseInt(this.container.find('.left .secondselect').val(), 10) : 0;
+                    }
                     if (!this.timePicker24Hour) {
                         var ampm = this.container.find('.left .ampmselect').val();
                         if (ampm === 'PM' && hour < 12)
@@ -800,6 +875,10 @@
                     if (this.isInvalidDate(calendar[row][col]))
                         classes.push('off', 'disabled');
 
+                    //if start date selected and any invalid date ahead disable all of them
+                    if(!this.endDate && this.nextInvalidDate && calendar[row][col] > this.nextInvalidDate )
+                      classes.push('off', 'disabled');
+
                     //highlight the currently selected start date
                     if (calendar[row][col].format('YYYY-MM-DD') == this.startDate.format('YYYY-MM-DD'))
                         classes.push('active', 'start-date');
@@ -809,7 +888,7 @@
                         classes.push('active', 'end-date');
 
                     //highlight dates in-between the selected dates
-                    if (this.endDate != null && calendar[row][col] > this.startDate && calendar[row][col] < this.endDate)
+                    else if (this.endDate != null && calendar[row][col] > this.startDate && calendar[row][col] < this.endDate)
                         classes.push('in-range');
 
                     //apply custom classes for this date
@@ -864,10 +943,21 @@
                 //Preserve the time already selected
                 var timeSelector = this.container.find('.drp-calendar.right .calendar-time');
                 if (timeSelector.html() != '') {
-
-                    selected.hour(selected.hour() || timeSelector.find('.hourselect option:selected').val());
-                    selected.minute(selected.minute() || timeSelector.find('.minuteselect option:selected').val());
-                    selected.second(selected.second() || timeSelector.find('.secondselect option:selected').val());
+                    var time, hour, minute,second;
+                    if( this.timePickerOptions.length > 0 ){
+                      time = timeSelector.find('.hourselect option:selected').val().split(':');
+                      hour = time[0];
+                      minute = time[1];
+                      second = time[2];
+                    }
+                    else{
+                      hour = timeSelector.find('.hourselect option:selected').val();
+                      minute = timeSelector.find('.minuteselect option:selected').val();
+                      second = timeSelector.find('.secondselect option:selected').val();
+                    }
+                    selected.hour(selected.hour() || hour);
+                    selected.minute(selected.minute() || minute);
+                    selected.second(selected.second() || second);
 
                     if (!this.timePicker24Hour) {
                         var ampm = timeSelector.find('.ampmselect option:selected').val();
@@ -891,113 +981,131 @@
             // hours
             //
 
-            html = '<select class="hourselect">';
+            // If predefined time render only available options
+            if( this.timePickerOptions.length > 0){
+              html = '<select class="hourselect">';
+              for(var i = 0; i < this.timePickerOptions.length; i++){
+                var time = this.timePickerOptions[i].clone();
+                var value = this.timePicker24Hour ? time.format('HH:mm:ss') : time.format('hh:mm:ss A');
 
-            var start = this.timePicker24Hour ? 0 : 1;
-            var end = this.timePicker24Hour ? 23 : 12;
-
-            for (var i = start; i <= end; i++) {
-                var i_in_24 = i;
-                if (!this.timePicker24Hour)
-                    i_in_24 = selected.hour() >= 12 ? (i == 12 ? 12 : i + 12) : (i == 12 ? 0 : i);
-
-                var time = selected.clone().hour(i_in_24);
-                var disabled = false;
-                if (minDate && time.minute(59).isBefore(minDate))
-                    disabled = true;
-                if (maxDate && time.minute(0).isAfter(maxDate))
-                    disabled = true;
-
-                if (i_in_24 == selected.hour() && !disabled) {
-                    html += '<option value="' + i + '" selected="selected">' + i + '</option>';
-                } else if (disabled) {
-                    html += '<option value="' + i + '" disabled="disabled" class="disabled">' + i + '</option>';
-                } else {
-                    html += '<option value="' + i + '">' + i + '</option>';
+                if( time.hour() == selected.hour() && time.minute() == selected.minute() && time.second() == selected.second()){
+                  html += '<option value="' + time.format('HH:mm:ss') + '" selected="selected">' + value + '</option>';
                 }
+                else{
+                  html += '<option value="' + time.format('HH:mm:ss') + '">' + value + '</option>';
+                }
+              }
+              html += '</select> ';
             }
+            else{
+              html = '<select class="hourselect">';
+              var start = this.timePicker24Hour ? 0 : 1;
+              var end = this.timePicker24Hour ? 23 : 12;
 
-            html += '</select> ';
+              for (var i = start; i <= end; i++) {
+                  var i_in_24 = i;
+                  if (!this.timePicker24Hour)
+                      i_in_24 = selected.hour() >= 12 ? (i == 12 ? 12 : i + 12) : (i == 12 ? 0 : i);
 
-            //
-            // minutes
-            //
+                  var time = selected.clone().hour(i_in_24);
+                  var disabled = false;
+                  if (minDate && time.minute(59).isBefore(minDate))
+                      disabled = true;
+                  if (maxDate && time.minute(0).isAfter(maxDate))
+                      disabled = true;
 
-            html += ': <select class="minuteselect">';
+                  if (i_in_24 == selected.hour() && !disabled) {
+                      html += '<option value="' + i + '" selected="selected">' + i + '</option>';
+                  } else if (disabled) {
+                      html += '<option value="' + i + '" disabled="disabled" class="disabled">' + i + '</option>';
+                  } else {
+                      html += '<option value="' + i + '">' + i + '</option>';
+                  }
+              }
 
-            for (var i = 0; i < 60; i += this.timePickerIncrement) {
-                var padded = i < 10 ? '0' + i : i;
-                var time = selected.clone().minute(i);
+              html += '</select> ';
 
-                var disabled = false;
-                if (minDate && time.second(59).isBefore(minDate))
-                    disabled = true;
-                if (maxDate && time.second(0).isAfter(maxDate))
-                    disabled = true;
+              //
+              // minutes
+              //
 
-                if (selected.minute() == i && !disabled) {
-                    html += '<option value="' + i + '" selected="selected">' + padded + '</option>';
-                } else if (disabled) {
-                    html += '<option value="' + i + '" disabled="disabled" class="disabled">' + padded + '</option>';
-                } else {
-                    html += '<option value="' + i + '">' + padded + '</option>';
-                }
-            }
+              html += ': <select class="minuteselect">';
 
-            html += '</select> ';
+              for (var i = 0; i < 60; i += this.timePickerIncrement) {
+                  var padded = i < 10 ? '0' + i : i;
+                  var time = selected.clone().minute(i);
 
-            //
-            // seconds
-            //
+                  var disabled = false;
+                  if (minDate && time.second(59).isBefore(minDate))
+                      disabled = true;
+                  if (maxDate && time.second(0).isAfter(maxDate))
+                      disabled = true;
 
-            if (this.timePickerSeconds) {
-                html += ': <select class="secondselect">';
+                  if (selected.minute() == i && !disabled) {
+                      html += '<option value="' + i + '" selected="selected">' + padded + '</option>';
+                  } else if (disabled) {
+                      html += '<option value="' + i + '" disabled="disabled" class="disabled">' + padded + '</option>';
+                  } else {
+                      html += '<option value="' + i + '">' + padded + '</option>';
+                  }
+              }
 
-                for (var i = 0; i < 60; i++) {
-                    var padded = i < 10 ? '0' + i : i;
-                    var time = selected.clone().second(i);
+              html += '</select> ';
 
-                    var disabled = false;
-                    if (minDate && time.isBefore(minDate))
-                        disabled = true;
-                    if (maxDate && time.isAfter(maxDate))
-                        disabled = true;
+              //
+              // seconds
+              //
 
-                    if (selected.second() == i && !disabled) {
-                        html += '<option value="' + i + '" selected="selected">' + padded + '</option>';
-                    } else if (disabled) {
-                        html += '<option value="' + i + '" disabled="disabled" class="disabled">' + padded + '</option>';
-                    } else {
-                        html += '<option value="' + i + '">' + padded + '</option>';
-                    }
-                }
+              if (this.timePickerSeconds) {
+                  html += ': <select class="secondselect">';
 
-                html += '</select> ';
-            }
+                  for (var i = 0; i < 60; i++) {
+                      var padded = i < 10 ? '0' + i : i;
+                      var time = selected.clone().second(i);
 
-            //
-            // AM/PM
-            //
+                      var disabled = false;
+                      if (minDate && time.isBefore(minDate))
+                          disabled = true;
+                      if (maxDate && time.isAfter(maxDate))
+                          disabled = true;
 
-            if (!this.timePicker24Hour) {
-                html += '<select class="ampmselect">';
+                      if (selected.second() == i && !disabled) {
+                          html += '<option value="' + i + '" selected="selected">' + padded + '</option>';
+                      } else if (disabled) {
+                          html += '<option value="' + i + '" disabled="disabled" class="disabled">' + padded + '</option>';
+                      } else {
+                          html += '<option value="' + i + '">' + padded + '</option>';
+                      }
+                  }
 
-                var am_html = '';
-                var pm_html = '';
+                  html += '</select> ';
+              }
 
-                if (minDate && selected.clone().hour(12).minute(0).second(0).isBefore(minDate))
-                    am_html = ' disabled="disabled" class="disabled"';
 
-                if (maxDate && selected.clone().hour(0).minute(0).second(0).isAfter(maxDate))
-                    pm_html = ' disabled="disabled" class="disabled"';
+              //
+              // AM/PM
+              //
 
-                if (selected.hour() >= 12) {
-                    html += '<option value="AM"' + am_html + '>AM</option><option value="PM" selected="selected"' + pm_html + '>PM</option>';
-                } else {
-                    html += '<option value="AM" selected="selected"' + am_html + '>AM</option><option value="PM"' + pm_html + '>PM</option>';
-                }
+              if (!this.timePicker24Hour) {
+                  html += '<select class="ampmselect">';
 
-                html += '</select>';
+                  var am_html = '';
+                  var pm_html = '';
+
+                  if (minDate && selected.clone().hour(12).minute(0).second(0).isBefore(minDate))
+                      am_html = ' disabled="disabled" class="disabled"';
+
+                  if (maxDate && selected.clone().hour(0).minute(0).second(0).isAfter(maxDate))
+                      pm_html = ' disabled="disabled" class="disabled"';
+
+                  if (selected.hour() >= 12) {
+                      html += '<option value="AM"' + am_html + '>AM</option><option value="PM" selected="selected"' + pm_html + '>PM</option>';
+                  } else {
+                      html += '<option value="AM" selected="selected"' + am_html + '>AM</option><option value="PM"' + pm_html + '>PM</option>';
+                  }
+
+                  html += '</select>';
+              }
             }
 
             this.container.find('.drp-calendar.' + side + ' .calendar-time').html(html);
@@ -1015,6 +1123,11 @@
         },
 
         move: function() {
+
+          // Should not move if it's inline mode
+          if (this.inline)
+            return;
+
             var parentOffset = { top: 0, left: 0 },
                 containerTop;
             var parentRightEdge = $(window).width();
@@ -1126,7 +1239,7 @@
         },
 
         toggle: function(e) {
-            if (this.isShowing) {
+            if (this.isShowing && !this.inline) {
                 this.hide();
             } else {
                 this.show();
@@ -1142,7 +1255,8 @@
                 e.type == "focusin" ||
                 target.closest(this.element).length ||
                 target.closest(this.container).length ||
-                target.closest('.calendar-table').length
+                target.closest('.calendar-table').length ||
+                this.inline
                 ) return;
             this.hide();
             this.element.trigger('outsideClick.daterangepicker', this);
@@ -1215,6 +1329,9 @@
             var cal = $(e.target).parents('.drp-calendar');
             var date = cal.hasClass('left') ? this.leftCalendar.calendar[row][col] : this.rightCalendar.calendar[row][col];
 
+            // ignore if range contains invalid date
+            if (this.isInvalidDate(date)) return;
+
             //highlight the dates between the start date and the date being hovered as a potential end date
             var leftCalendar = this.leftCalendar;
             var rightCalendar = this.rightCalendar;
@@ -1263,7 +1380,19 @@
 
             if (this.endDate || date.isBefore(this.startDate, 'day')) { //picking start
                 if (this.timePicker) {
-                    var hour = parseInt(this.container.find('.left .hourselect').val(), 10);
+                    var time, hour, minute, second;
+                    if( this.timePickerOptions.length > 0 ){
+                      time = this.container.find('.left .hourselect').val().split(':');
+                      hour = parseInt(time[0], 10);
+                      minute = parseInt(time[1], 10);
+                      second = this.timePickerSeconds ? parseInt(time[2], 10) : 0;
+                    }
+                    else {
+                      hour = parseInt(this.container.find('.left .hourselect').val(), 10);
+                      minute = parseInt(this.container.find('.left .minuteselect').val(), 10);
+                      second = this.timePickerSeconds ? parseInt(this.container.find('.left .secondselect').val(), 10) : 0;
+                    }
+
                     if (!this.timePicker24Hour) {
                         var ampm = this.container.find('.left .ampmselect').val();
                         if (ampm === 'PM' && hour < 12)
@@ -1271,8 +1400,6 @@
                         if (ampm === 'AM' && hour === 12)
                             hour = 0;
                     }
-                    var minute = parseInt(this.container.find('.left .minuteselect').val(), 10);
-                    var second = this.timePickerSeconds ? parseInt(this.container.find('.left .secondselect').val(), 10) : 0;
                     date = date.clone().hour(hour).minute(minute).second(second);
                 }
                 this.endDate = null;
@@ -1283,7 +1410,19 @@
                 this.setEndDate(this.startDate.clone());
             } else { // picking end
                 if (this.timePicker) {
-                    var hour = parseInt(this.container.find('.right .hourselect').val(), 10);
+                    var time, hour, minute, second;
+                    if( this.timePickerOptions.length > 0 ){
+                      time = this.container.find('.right .hourselect').val().split(':');
+                      hour = parseInt(time[0], 10);
+                      minute = parseInt(time[1], 10);
+                      second = this.timePickerSeconds ? parseInt(time[2], 10) : 0;
+                    }
+                    else {
+                      hour = parseInt(this.container.find('.right .hourselect').val(), 10);
+                      minute = parseInt(this.container.find('.right .minuteselect').val(), 10);
+                      second = this.timePickerSeconds ? parseInt(this.container.find('.right .secondselect').val(), 10) : 0;
+                    }
+
                     if (!this.timePicker24Hour) {
                         var ampm = this.container.find('.right .ampmselect').val();
                         if (ampm === 'PM' && hour < 12)
@@ -1291,8 +1430,6 @@
                         if (ampm === 'AM' && hour === 12)
                             hour = 0;
                     }
-                    var minute = parseInt(this.container.find('.right .minuteselect').val(), 10);
-                    var second = this.timePickerSeconds ? parseInt(this.container.find('.right .secondselect').val(), 10) : 0;
                     date = date.clone().hour(hour).minute(minute).second(second);
                 }
                 this.setEndDate(date.clone());
@@ -1320,7 +1457,7 @@
             var i = 0;
             for (var range in this.ranges) {
               if (this.timePicker) {
-                    var format = this.timePickerSeconds ? "YYYY-MM-DD hh:mm:ss" : "YYYY-MM-DD hh:mm";
+                    var format = this.timePickerSeconds ? "YYYY-MM-DD HH:mm:ss" : "YYYY-MM-DD HH:mm";
                     //ignore times when comparing dates if time picker seconds is not enabled
                     if (this.startDate.format(format) == this.ranges[range][0].format(format) && this.endDate.format(format) == this.ranges[range][1].format(format)) {
                         customRange = false;
@@ -1348,14 +1485,16 @@
         },
 
         clickApply: function(e) {
-            this.hide();
+            // Should not hide the picker if it's inline mode, but should update the parentElement
+            (!this.inline) ? this.hide() : this.updateElement();
             this.element.trigger('apply.daterangepicker', this);
         },
 
         clickCancel: function(e) {
             this.startDate = this.oldStartDate;
             this.endDate = this.oldEndDate;
-            this.hide();
+            // Should not hide the picker if it's inline mode, but should update the parentElement
+            (!this.inline) ? this.hide() : this.updateElement();
             this.element.trigger('cancel.daterangepicker', this);
         },
 
@@ -1406,9 +1545,18 @@
             var cal = $(e.target).closest('.drp-calendar'),
                 isLeft = cal.hasClass('left');
 
-            var hour = parseInt(cal.find('.hourselect').val(), 10);
-            var minute = parseInt(cal.find('.minuteselect').val(), 10);
-            var second = this.timePickerSeconds ? parseInt(cal.find('.secondselect').val(), 10) : 0;
+            var time, hour, minute, second;
+            if( this.timePickerOptions.length > 0 ){
+              time = cal.find('.hourselect').val().split(':');
+              hour = parseInt(time[0], 10);
+              minute = parseInt(time[1], 10);
+              second = this.timePickerSeconds ? parseInt(time[2], 10) : 0;
+            }
+            else {
+              hour = parseInt(cal.find('.hourselect').val(), 10);
+              minute = parseInt(cal.find('.minuteselect').val(), 10);
+              second = this.timePickerSeconds ? parseInt(cal.find('.secondselect').val(), 10) : 0;
+            }
 
             if (!this.timePicker24Hour) {
                 var ampm = cal.find('.ampmselect').val();
@@ -1436,6 +1584,10 @@
                 end.second(second);
                 this.setEndDate(end);
             }
+
+            // Update the parent element with the autoplay option in inline mode
+            if (this.inline && this.autoApply)
+              this.updateElement()
 
             //update the calendars so all clickable dates reflect the new time component
             this.updateCalendars();
@@ -1476,12 +1628,12 @@
 
         keydown: function(e) {
             //hide on tab or enter
-            if ((e.keyCode === 9) || (e.keyCode === 13)) {
+            if (!this.inline && (e.keyCode === 9) || (e.keyCode === 13)) {
                 this.hide();
             }
 
             //hide on esc and prevent propagation
-            if (e.keyCode === 27) {
+            if (!this.inline && e.keyCode === 27) {
                 e.preventDefault();
                 e.stopPropagation();
 
